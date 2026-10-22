@@ -1,50 +1,67 @@
-const { app, BrowserWindow, session } = require('electron')
-const http = require('http')
-const { configurePinokioUserAgent } = require('../user-agent')
+const assert = require('assert')
+const {
+  buildBrowserLikeUserAgent,
+  buildChromiumUserAgent,
+  sanitizeUserAgentForRequests
+} = require('../user-agent')
 
-const run = async () => {
-  configurePinokioUserAgent({ app, session: session.defaultSession })
-  const server = http.createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end('<html><body>UA diagnostic</body></html>')
-  })
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+const chromeVersion = '142.0.7444.175'
+const appVersion = '7.2.8'
 
-  const win = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      session: session.defaultSession,
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-
-  try {
-    const { port } = server.address()
-    await win.loadURL(`http://127.0.0.1:${port}/`)
-    const result = await win.webContents.executeJavaScript(`({
-      userAgent: navigator.userAgent,
-      userAgentData: navigator.userAgentData ? {
-        brands: navigator.userAgentData.brands,
-        mobile: navigator.userAgentData.mobile,
-        platform: navigator.userAgentData.platform
-      } : null,
-      vendor: navigator.vendor,
-      platform: navigator.platform
-    })`)
-    console.log(JSON.stringify(result, null, 2))
-  } finally {
-    win.destroy()
-    await new Promise((resolve) => server.close(resolve))
+const cases = [
+  {
+    platform: 'darwin',
+    arch: 'arm64',
+    platformToken: 'Macintosh; Intel Mac OS X 10_15_7'
+  },
+  {
+    platform: 'win32',
+    arch: 'x64',
+    platformToken: 'Windows NT 10.0; Win64; x64'
+  },
+  {
+    platform: 'linux',
+    arch: 'arm64',
+    platformToken: 'X11; Linux aarch64'
   }
+]
+
+for (const item of cases) {
+  const ua = buildBrowserLikeUserAgent({
+    appVersion,
+    chromeVersion,
+    platform: item.platform,
+    arch: item.arch
+  })
+  assert.ok(ua.startsWith(`Mozilla/5.0 (${item.platformToken})`), ua)
+  assert.match(ua, /AppleWebKit\/537\.36 \(KHTML, like Gecko\)/)
+  assert.match(ua, /Chrome\/142\.0\.7444\.175 Safari\/537\.36/)
+  assert.ok(ua.endsWith(`Pinokio/${appVersion}`), ua)
+  assert.doesNotMatch(ua, /Electron\//)
+
+  const chromeMatch = ua.match(/(?:Chrome|Chromium|CriOS)\/([0-9.]+)/)
+  assert.ok(chromeMatch, `missing Chrome token in ${ua}`)
+  assert.strictEqual(parseFloat(chromeMatch[1]), 142)
+
+  const networkUa = sanitizeUserAgentForRequests(`${ua} Electron/39.2.3`)
+  assert.match(networkUa, /Chrome\/142\.0\.7444\.175 Safari\/537\.36/)
+  assert.doesNotMatch(networkUa, /Pinokio\//)
+  assert.doesNotMatch(networkUa, /Electron\//)
+
+  const pinokiodUa = sanitizeUserAgentForRequests(`${ua} Electron/39.2.3`, {
+    preservePinokio: true
+  })
+  assert.match(pinokiodUa, /Chrome\/142\.0\.7444\.175 Safari\/537\.36/)
+  assert.match(pinokiodUa, new RegExp(`Pinokio/${appVersion}$`))
+  assert.doesNotMatch(pinokiodUa, /Electron\//)
 }
 
-app.whenReady()
-  .then(run)
-  .catch((error) => {
-    console.error(error)
-    process.exitCode = 1
-  })
-  .finally(() => {
-    app.quit()
-  })
+const baseUa = buildChromiumUserAgent({
+  chromeVersion,
+  platform: 'darwin',
+  arch: 'x64'
+})
+assert.match(baseUa, /Chrome\/142\.0\.7444\.175 Safari\/537\.36$/)
+assert.doesNotMatch(baseUa, /Pinokio\//)
+
+console.log('User agent checks passed')
